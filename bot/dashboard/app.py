@@ -38,7 +38,13 @@ client = OpenAI()
 fallacy_detector = FallacyDetector()
 
 def main():
-    st.title("Twitter Fallacy Bot Dashboard")
+    st.set_page_config(
+        page_title="RhetoricalRef Dashboard",
+        page_icon="🎯",
+        layout="wide"
+    )
+    
+    st.title("RhetoricalRef Dashboard")
     
     # Sidebar navigation
     page = st.sidebar.selectbox("Navigation", ["Sandbox", "Activity Log", "Analytics"])
@@ -130,11 +136,22 @@ def show_sandbox():
                 
                 # Generate response
                 try:
-                    st.write("4️⃣ Generating response...")
+                    st.write("4️⃣ Generating responses...")
                     response = fallacy_detector.generate_response(fallacies, test_tweet)
                     if response:
                         st.subheader("🤖 Bot's Response")
                         st.info(response)
+                        
+                    # Add Twitter response
+                    twitter_response = fallacy_detector.generate_twitter_response(fallacies, test_tweet)
+                    if twitter_response:
+                        st.subheader("🐦 Twitter Response (@RhetoricalRef)")
+                        st.success(twitter_response)
+                        # Show character count
+                        char_count = len(twitter_response)
+                        st.caption(f"Character count: {char_count}/280")
+                        if char_count > 280:
+                            st.warning("⚠️ Response exceeds Twitter's 280 character limit!")
                 except Exception as e:
                     st.error(f"Error generating response: {str(e)}")
                     response = None

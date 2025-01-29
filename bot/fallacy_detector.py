@@ -173,3 +173,53 @@ Your response:"""
         except Exception as e:
             logger.error(f"Error in explain_fallacy: {str(e)}")
             return "Sorry, I couldn't generate an explanation at this time."
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def generate_twitter_response(self, fallacies: List[Dict[str, Any]], original_text: str) -> Optional[str]:
+        """Generate a concise Twitter response (max 280 chars) explaining the fallacies found."""
+        if not fallacies:
+            return None
+            
+        # Get the top 2 most confident fallacies
+        sorted_fallacies = sorted(fallacies, key=lambda x: x['confidence'], reverse=True)[:2]
+        
+        fallacy_descriptions = "\n".join([
+            f"- {fallacy['type'].replace('_', ' ').title()}"
+            for fallacy in sorted_fallacies
+        ])
+        
+        prompt = f"""Write a witty, educational tweet response (max 280 chars) about these logical fallacies:
+
+Tweet analyzed: "{original_text}"
+
+Fallacies found:
+{fallacy_descriptions}
+
+Requirements:
+1. Must be ≤ 280 characters
+2. Use a friendly, referee-like tone
+3. Include a brief explanation
+4. Add a constructive suggestion
+5. Use emojis sparingly
+6. Sign with -🎯 @RhetoricalRef #LogicCheck
+
+Example:
+"🎯 Penalty flag! That's a bandwagon play ('everyone knows') + hasty generalization. One case doesn't make a pattern. Try citing specific studies instead! -🎯 @RhetoricalRef #LogicCheck"
+
+Your tweet response:"""
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a witty bot that explains logical fallacies in tweets."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=100  # Keep it concise for Twitter
+            )
+            return response.choices[0].message.content.strip()
+                
+        except Exception as e:
+            logger.error(f"Error generating Twitter response: {str(e)}")
+            return None
