@@ -28,7 +28,7 @@ An AI-powered bot that detects logical fallacies in text and provides educationa
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/fallacy-bot.git
+git clone https://github.com/Hustada/fallacy-bot.git
 cd fallacy-bot
 ```
 
