@@ -1,6 +1,6 @@
-# Twitter Fallacy Detection Bot
+# Fallacy Bot
 
-An AI-powered bot that detects logical fallacies in tweets and provides educational feedback using GPT-3.5-turbo.
+An AI-powered bot that detects logical fallacies in text and provides educational feedback using GPT-3.5-turbo.
 
 ## Features
 
@@ -28,8 +28,8 @@ An AI-powered bot that detects logical fallacies in tweets and provides educatio
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/twitter-fallacy-bot.git
-cd twitter-fallacy-bot
+git clone https://github.com/yourusername/fallacy-bot.git
+cd fallacy-bot
 ```
 
 2. Create and activate a virtual environment:
@@ -59,7 +59,7 @@ The dashboard will be available at http://localhost:8501
 
 1. Open the dashboard in your browser
 2. Navigate to the "Sandbox" tab
-3. Enter a tweet or statement to analyze
+3. Enter any text to analyze
 4. Click "Analyze" to detect logical fallacies
 5. Review the detected fallacies and educational feedback
 
