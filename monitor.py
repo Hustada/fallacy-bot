@@ -1,5 +1,8 @@
 import time
 import logging
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 from bot.twitter_monitor import TwitterMonitor
 
 # Configure logging
@@ -10,6 +13,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
+    # Load environment variables from the bot directory
+    env_path = Path(__file__).parent / 'bot' / '.env'
+    load_dotenv(env_path)
+    
     monitor = TwitterMonitor()
     
     try:
@@ -23,14 +30,14 @@ def main():
                 monitor.check_notifications()
                 
                 # Monitor specific accounts (add accounts you want to monitor)
-                accounts_to_monitor = ["example_account"]  # Replace with actual accounts
+                accounts_to_monitor = ["hustadvicka", "continuumcritic"]  # Replace with actual accounts
                 for account in accounts_to_monitor:
                     logger.info(f"Monitoring account: {account}")
                     monitor.monitor_account(account)
                 
-                # Wait before next check (5 minutes)
-                logger.info("Waiting 5 minutes before next check...")
-                time.sleep(300)
+                # Wait before next check (30 seconds)
+                logger.info("Waiting 30 seconds before next check...")
+                time.sleep(30)
                 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {str(e)}")
