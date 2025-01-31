@@ -272,67 +272,79 @@ class TwitterMonitorPlaywright:
                                             if reply_box:
                                                 clicked = True
                                                 logger.info("Successfully clicked reply button")
-                                                break
-                                            
-                                            # Also try checking if the button's state changed
-                                            button_state = await self.page.evaluate("""(element) => {
-                                                return {
-                                                    'aria-expanded': element.getAttribute('aria-expanded'),
-                                                    'aria-pressed': element.getAttribute('aria-pressed')
-                                                }
-                                            }""", reply_button)
-                                            
-                                            if button_state.get('aria-expanded') == 'true' or button_state.get('aria-pressed') == 'true':
-                                                clicked = True
-                                                logger.info("Reply button state indicates successful click")
-                                                break
                                                 
+                                                # Generate and type our response
+                                                response = self.fallacy_detector.generate_twitter_response(fallacies, tweet_text)
+                                                if response:
+                                                    logger.info(f"Generated response: {response}")
+                                                    
+                                                    # Click and type with retry
+                                                    max_retries = 3
+                                                    for attempt in range(max_retries):
+                                                        try:
+                                                            await reply_box.click()
+                                                            await asyncio.sleep(1)
+                                                            await reply_box.type(response, delay=100)
+                                                            
+                                                            # Verify text was entered
+                                                            entered_text = await reply_box.text_content()
+                                                            if response in entered_text:
+                                                                logger.info("Successfully entered response text")
+                                                                
+                                                                # Try multiple selectors for the tweet button
+                                                                tweet_button_selectors = [
+                                                                    '[data-testid="tweetButton"]',
+                                                                    '[data-testid="tweetButtonInline"]',
+                                                                    'div[data-testid="tweetButtonInline"]',
+                                                                    'div[role="button"]:has-text("Reply")',
+                                                                    'div[role="button"]:has-text("Tweet")'
+                                                                ]
+                                                                
+                                                                tweet_button = None
+                                                                for selector in tweet_button_selectors:
+                                                                    try:
+                                                                        button = await self.page.wait_for_selector(selector, timeout=2000)
+                                                                        if button:
+                                                                            tweet_button = button
+                                                                            logger.info(f"Found tweet button with selector: {selector}")
+                                                                            break
+                                                                    except Exception:
+                                                                        continue
+                                                                
+                                                                if tweet_button:
+                                                                    try:
+                                                                        await tweet_button.click()
+                                                                        logger.info("Clicked tweet button to submit reply")
+                                                                        # Wait for the tweet to be posted
+                                                                        await self.page.wait_for_load_state('networkidle')
+                                                                        await asyncio.sleep(2)
+                                                                    except Exception as e:
+                                                                        logger.error(f"Error clicking tweet button: {e}")
+                                                                        # Try JavaScript click as fallback
+                                                                        try:
+                                                                            await self.page.evaluate("(element) => element.click()", tweet_button)
+                                                                            logger.info("Clicked tweet button using JavaScript")
+                                                                            await self.page.wait_for_load_state('networkidle')
+                                                                            await asyncio.sleep(2)
+                                                                        except Exception as js_e:
+                                                                            logger.error(f"JavaScript click also failed: {js_e}")
+                                                                else:
+                                                                    logger.error("Could not find tweet button with any selector")
+                                                                break
+                                                        except Exception as e:
+                                                            logger.warning(f"Text entry attempt {attempt + 1} failed: {e}")
+                                                            if attempt == max_retries - 1:
+                                                                logger.error("Failed to enter response text")
+                                                                continue
+                                                else:
+                                                    logger.error("Failed to generate response")
+                                                break
                                         except Exception as e:
-                                            logger.warning(f"Click method failed: {e}")
+                                            logger.debug(f"Click method failed: {e}")
+                                            continue
                                     
                                     if not clicked:
-                                        logger.error("Could not click reply button by any method")
-                                        continue
-                                    
-                                    # Now handle the reply box
-                                    reply_box = await self.page.wait_for_selector('[data-testid="tweetTextarea_0"]', timeout=5000)
-                                    if reply_box:
-                                        logger.info("Found reply box, generating response...")
-                                        response = self.fallacy_detector.generate_response(fallacies, tweet_text)
-                                        logger.info(f"Generated response: {response}")
-                                        
-                                        # Click and type with retry
-                                        max_retries = 3
-                                        for attempt in range(max_retries):
-                                            try:
-                                                await reply_box.click()
-                                                await asyncio.sleep(1)
-                                                await reply_box.type(response, delay=100)
-                                                
-                                                # Verify text was entered
-                                                entered_text = await reply_box.text_content()
-                                                if response in entered_text:
-                                                    logger.info("Successfully entered response text")
-                                                    break
-                                            except Exception as e:
-                                                logger.warning(f"Text entry attempt {attempt + 1} failed: {e}")
-                                                if attempt == max_retries - 1:
-                                                    logger.error("Failed to enter response text")
-                                                    continue
-                                        
-                                        tweet_button = await self.page.wait_for_selector('[data-testid="tweetButtonInline"]', timeout=5000)
-                                        if tweet_button:
-                                            logger.info("Found tweet button, clicking...")
-                                            await tweet_button.click()
-                                            await self.page.wait_for_load_state('networkidle')
-                                            logger.info("Response posted successfully!")
-                                            
-                                            # Take screenshot after posting
-                                            await self.page.screenshot(path=f"response_posted_{username}.png")
-                                        else:
-                                            logger.error("Could not find tweet button")
-                                    else:
-                                        logger.error("Could not find reply box after clicking reply")
+                                        logger.error("All click methods failed")
                                 else:
                                     logger.info("No fallacies found in this tweet")
                             except Exception as e:
@@ -446,67 +458,79 @@ class TwitterMonitorPlaywright:
                                             if reply_box:
                                                 clicked = True
                                                 logger.info("Successfully clicked reply button")
-                                                break
-                                            
-                                            # Also try checking if the button's state changed
-                                            button_state = await self.page.evaluate("""(element) => {
-                                                return {
-                                                    'aria-expanded': element.getAttribute('aria-expanded'),
-                                                    'aria-pressed': element.getAttribute('aria-pressed')
-                                                }
-                                            }""", reply_button)
-                                            
-                                            if button_state.get('aria-expanded') == 'true' or button_state.get('aria-pressed') == 'true':
-                                                clicked = True
-                                                logger.info("Reply button state indicates successful click")
-                                                break
                                                 
+                                                # Generate and type our response
+                                                response = self.fallacy_detector.generate_twitter_response(fallacies, tweet_text)
+                                                if response:
+                                                    logger.info(f"Generated response: {response}")
+                                                    
+                                                    # Click and type with retry
+                                                    max_retries = 3
+                                                    for attempt in range(max_retries):
+                                                        try:
+                                                            await reply_box.click()
+                                                            await asyncio.sleep(1)
+                                                            await reply_box.type(response, delay=100)
+                                                            
+                                                            # Verify text was entered
+                                                            entered_text = await reply_box.text_content()
+                                                            if response in entered_text:
+                                                                logger.info("Successfully entered response text")
+                                                                
+                                                                # Try multiple selectors for the tweet button
+                                                                tweet_button_selectors = [
+                                                                    '[data-testid="tweetButton"]',
+                                                                    '[data-testid="tweetButtonInline"]',
+                                                                    'div[data-testid="tweetButtonInline"]',
+                                                                    'div[role="button"]:has-text("Reply")',
+                                                                    'div[role="button"]:has-text("Tweet")'
+                                                                ]
+                                                                
+                                                                tweet_button = None
+                                                                for selector in tweet_button_selectors:
+                                                                    try:
+                                                                        button = await self.page.wait_for_selector(selector, timeout=2000)
+                                                                        if button:
+                                                                            tweet_button = button
+                                                                            logger.info(f"Found tweet button with selector: {selector}")
+                                                                            break
+                                                                    except Exception:
+                                                                        continue
+                                                                
+                                                                if tweet_button:
+                                                                    try:
+                                                                        await tweet_button.click()
+                                                                        logger.info("Clicked tweet button to submit reply")
+                                                                        # Wait for the tweet to be posted
+                                                                        await self.page.wait_for_load_state('networkidle')
+                                                                        await asyncio.sleep(2)
+                                                                    except Exception as e:
+                                                                        logger.error(f"Error clicking tweet button: {e}")
+                                                                        # Try JavaScript click as fallback
+                                                                        try:
+                                                                            await self.page.evaluate("(element) => element.click()", tweet_button)
+                                                                            logger.info("Clicked tweet button using JavaScript")
+                                                                            await self.page.wait_for_load_state('networkidle')
+                                                                            await asyncio.sleep(2)
+                                                                        except Exception as js_e:
+                                                                            logger.error(f"JavaScript click also failed: {js_e}")
+                                                                else:
+                                                                    logger.error("Could not find tweet button with any selector")
+                                                                break
+                                                        except Exception as e:
+                                                            logger.warning(f"Text entry attempt {attempt + 1} failed: {e}")
+                                                            if attempt == max_retries - 1:
+                                                                logger.error("Failed to enter response text")
+                                                                continue
+                                                else:
+                                                    logger.error("Failed to generate response")
+                                                break
                                         except Exception as e:
-                                            logger.warning(f"Click method failed: {e}")
+                                            logger.debug(f"Click method failed: {e}")
+                                            continue
                                     
                                     if not clicked:
-                                        logger.error("Could not click reply button by any method")
-                                        continue
-                                    
-                                    # Now handle the reply box
-                                    reply_box = await self.page.wait_for_selector('[data-testid="tweetTextarea_0"]', timeout=5000)
-                                    if reply_box:
-                                        logger.info("Found reply box, generating response...")
-                                        response = self.fallacy_detector.generate_response(fallacies, tweet_text)
-                                        logger.info(f"Generated response: {response}")
-                                        
-                                        # Click and type with retry
-                                        max_retries = 3
-                                        for attempt in range(max_retries):
-                                            try:
-                                                await reply_box.click()
-                                                await asyncio.sleep(1)
-                                                await reply_box.type(response, delay=100)
-                                                
-                                                # Verify text was entered
-                                                entered_text = await reply_box.text_content()
-                                                if response in entered_text:
-                                                    logger.info("Successfully entered response text")
-                                                    break
-                                            except Exception as e:
-                                                logger.warning(f"Text entry attempt {attempt + 1} failed: {e}")
-                                                if attempt == max_retries - 1:
-                                                    logger.error("Failed to enter response text")
-                                                    continue
-                                        
-                                        tweet_button = await self.page.wait_for_selector('[data-testid="tweetButtonInline"]', timeout=5000)
-                                        if tweet_button:
-                                            logger.info("Found tweet button, clicking...")
-                                            await tweet_button.click()
-                                            await self.page.wait_for_load_state('networkidle')
-                                            logger.info("Response posted successfully!")
-                                            
-                                            # Take screenshot after posting
-                                            await self.page.screenshot(path=f"response_posted_{username}.png")
-                                        else:
-                                            logger.error("Could not find tweet button")
-                                    else:
-                                        logger.error("Could not find reply box after clicking reply")
+                                        logger.error("All click methods failed")
                                 else:
                                     logger.info("No fallacies found in this tweet")
                             except Exception as e:

@@ -188,7 +188,7 @@ Your response:"""
             for fallacy in sorted_fallacies
         ])
         
-        prompt = f"""Write a witty, educational tweet response (max 280 chars) about these logical fallacies:
+        prompt = f"""Write a witty, educational tweet response (max 250 chars) about these logical fallacies:
 
 Tweet analyzed: "{original_text}"
 
@@ -196,15 +196,15 @@ Fallacies found:
 {fallacy_descriptions}
 
 Requirements:
-1. Must be ≤ 280 characters
+1. Must be ≤ 250 characters (STRICT LIMIT)
 2. Use a friendly, referee-like tone
 3. Include a brief explanation
 4. Add a constructive suggestion
 5. Use emojis sparingly
-6. Sign with -🎯 @RhetoricalRef #LogicCheck
+6. End with -🎯 @RhetoricalRef
 
 Example:
-"🎯 Penalty flag! That's a bandwagon play ('everyone knows') + hasty generalization. One case doesn't make a pattern. Try citing specific studies instead! -🎯 @RhetoricalRef #LogicCheck"
+"🎯 Penalty flag! That's a bandwagon play + hasty generalization. One case doesn't make a pattern. Try citing specific studies instead! -🎯 @RhetoricalRef"
 
 Your tweet response:"""
         
@@ -218,7 +218,21 @@ Your tweet response:"""
                 temperature=0.7,
                 max_tokens=100  # Keep it concise for Twitter
             )
-            return response.choices[0].message.content.strip()
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Ensure we don't exceed Twitter's character limit
+            if len(result) > 280:
+                # Try to cut at a sentence boundary
+                cutoff = result[:250].rfind('.')
+                if cutoff == -1:
+                    cutoff = 250
+                result = result[:cutoff].rstrip() + " -🎯 @RhetoricalRef"
+                
+            # Remove any hashtags that might have been generated
+            result = ' '.join([word for word in result.split() if not word.startswith('#')])
+            
+            return result
                 
         except Exception as e:
             logger.error(f"Error generating Twitter response: {str(e)}")
