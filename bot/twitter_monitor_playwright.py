@@ -6,8 +6,10 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict
 from playwright.async_api import async_playwright, Page, TimeoutError, ElementHandle
 from .fallacy_detector import FallacyDetector
+from .db_manager import DBManager
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,9 +20,32 @@ class TwitterMonitorPlaywright:
         load_dotenv()
         self.last_check_times = {}
         self.fallacy_detector = FallacyDetector()
+        self.db_manager = DBManager()
         self.browser = None
         self.context = None
         self.page = None
+        
+        # Load Twitter credentials from .env files
+        bot_env_path = Path(__file__).parent / '.env'
+        root_env_path = Path(__file__).parent.parent / '.env'
+        
+        self.twitter_username = os.getenv('TWITTER_USERNAME')
+        self.twitter_password = os.getenv('TWITTER_PASSWORD')
+        
+        # If not in environment, try reading from files
+        if not self.twitter_username or not self.twitter_password:
+            logger.info("Twitter credentials not found in environment, checking .env files")
+            for env_path in [bot_env_path, root_env_path]:
+                if env_path.exists():
+                    logger.info(f"Reading from {env_path}")
+                    with open(env_path, 'r') as f:
+                        for line in f:
+                            if line.startswith('TWITTER_USERNAME='):
+                                self.twitter_username = line.strip().split('=', 1)[1].strip("'").strip('"')
+                                os.environ["TWITTER_USERNAME"] = self.twitter_username
+                            elif line.startswith('TWITTER_PASSWORD='):
+                                self.twitter_password = line.strip().split('=', 1)[1].strip("'").strip('"')
+                                os.environ["TWITTER_PASSWORD"] = self.twitter_password
 
     async def setup(self):
         """Initialize the browser and context."""
@@ -68,6 +93,9 @@ class TwitterMonitorPlaywright:
 
     async def _login(self):
         """Login to X (formerly Twitter) using environment credentials with enhanced error handling."""
+        if not self.twitter_username or not self.twitter_password:
+            raise ValueError("Twitter credentials not found in .env file")
+            
         max_retries = 3
         retry_count = 0
         
@@ -82,7 +110,7 @@ class TwitterMonitorPlaywright:
                 if not username_input:
                     raise Exception("Could not find username input field")
                 
-                await username_input.fill(os.getenv('TWITTER_USERNAME'))
+                await username_input.fill(self.twitter_username)
                 await asyncio.sleep(1)
                 
                 # Try multiple methods to click next
@@ -100,7 +128,7 @@ class TwitterMonitorPlaywright:
                 if not password_input:
                     raise Exception("Could not find password input field")
                 
-                await password_input.fill(os.getenv('TWITTER_PASSWORD'))
+                await password_input.fill(self.twitter_password)
                 await asyncio.sleep(1)
                 
                 # Try multiple methods to click login
@@ -201,6 +229,22 @@ class TwitterMonitorPlaywright:
                             tweet_text = await tweet_text_elem.inner_text()
                             logger.info(f"First tweet text: {tweet_text[:100]}...")
                             
+                            # Get tweet ID
+                            tweet_id = None
+                            try:
+                                tweet_link = await first_tweet.query_selector('a[href*="/status/"]')
+                                if tweet_link:
+                                    href = await tweet_link.get_attribute('href')
+                                    tweet_id = href.split('/status/')[-1].split('?')[0]
+                            except Exception as e:
+                                logger.error(f"Error getting tweet ID: {e}")
+                                continue
+
+                            # Skip if we've already processed this tweet
+                            if tweet_id and self.db_manager.is_tweet_processed(tweet_id):
+                                logger.info(f"Skipping already processed tweet {tweet_id}")
+                                continue
+                            
                             # Force check this tweet
                             logger.info("Checking tweet for fallacies...")
                             try:
@@ -300,34 +344,63 @@ class TwitterMonitorPlaywright:
                                                                     'div[role="button"]:has-text("Tweet")'
                                                                 ]
                                                                 
-                                                                tweet_button = None
                                                                 for selector in tweet_button_selectors:
                                                                     try:
-                                                                        button = await self.page.wait_for_selector(selector, timeout=2000)
-                                                                        if button:
-                                                                            tweet_button = button
-                                                                            logger.info(f"Found tweet button with selector: {selector}")
+                                                                        tweet_button = await self.page.wait_for_selector(selector, timeout=5000)
+                                                                        if tweet_button:
+                                                                            # Make sure button is visible and clickable
+                                                                            await tweet_button.scroll_into_view_if_needed()
+                                                                            await asyncio.sleep(1)
+                                                                            
+                                                                            # Try multiple click methods
+                                                                            click_methods = [
+                                                                                lambda: tweet_button.click(),
+                                                                                lambda: tweet_button.click(delay=100),
+                                                                                lambda: tweet_button.click(force=True),
+                                                                                lambda: self.page.evaluate("(element) => element.click()", tweet_button)
+                                                                            ]
+                                                                            
+                                                                            for click_method in click_methods:
+                                                                                try:
+                                                                                    await click_method()
+                                                                                    await asyncio.sleep(2)
+                                                                                    
+                                                                                    # Check if the reply was successful
+                                                                                    # Look for elements that indicate success
+                                                                                    success_indicators = [
+                                                                                        'div[data-testid="toast"]',  # Success toast
+                                                                                        'div[aria-label*="Your tweet was sent"]',  # Success message
+                                                                                        'div[data-testid="tweetButtonInline"][aria-disabled="true"]'  # Disabled tweet button
+                                                                                    ]
+                                                                                    
+                                                                                    for indicator in success_indicators:
+                                                                                        try:
+                                                                                            await self.page.wait_for_selector(indicator, timeout=3000)
+                                                                                            logger.info(f"Found success indicator: {indicator}")
+                                                                                            
+                                                                                            # Mark tweet as processed after successful reply
+                                                                                            if tweet_id:
+                                                                                                self.db_manager.mark_tweet_processed(tweet_id, username)
+                                                                                                logger.info(f"Marked tweet {tweet_id} as processed")
+                                                                                            
+                                                                                            return True
+                                                                                        except Exception:
+                                                                                            continue
+                                                                                    
+                                                                                    # If we didn't find success indicators, try next click method
+                                                                                    logger.warning("Click seemed successful but no success indicators found")
+                                                                                    continue
+                                                                                    
+                                                                                except Exception as e:
+                                                                                    logger.error(f"Click method failed: {e}")
+                                                                                    continue
+                                                                            
+                                                                            logger.error("All click methods failed")
                                                                             break
-                                                                    except Exception:
-                                                                        continue
-                                                                
-                                                                if tweet_button:
-                                                                    try:
-                                                                        await tweet_button.click()
-                                                                        logger.info("Clicked tweet button to submit reply")
-                                                                        # Wait for the tweet to be posted
-                                                                        await self.page.wait_for_load_state('networkidle')
-                                                                        await asyncio.sleep(2)
+                                                                            
                                                                     except Exception as e:
-                                                                        logger.error(f"Error clicking tweet button: {e}")
-                                                                        # Try JavaScript click as fallback
-                                                                        try:
-                                                                            await self.page.evaluate("(element) => element.click()", tweet_button)
-                                                                            logger.info("Clicked tweet button using JavaScript")
-                                                                            await self.page.wait_for_load_state('networkidle')
-                                                                            await asyncio.sleep(2)
-                                                                        except Exception as js_e:
-                                                                            logger.error(f"JavaScript click also failed: {js_e}")
+                                                                        logger.debug(f"Tweet button selector {selector} failed: {e}")
+                                                                        continue
                                                                 else:
                                                                     logger.error("Could not find tweet button with any selector")
                                                                 break
@@ -347,6 +420,9 @@ class TwitterMonitorPlaywright:
                                         logger.error("All click methods failed")
                                 else:
                                     logger.info("No fallacies found in this tweet")
+                                    if tweet_id:
+                                        self.db_manager.mark_tweet_processed(tweet_id, username)
+                                        logger.info(f"Marked tweet {tweet_id} as processed (no fallacies)")
                             except Exception as e:
                                 logger.error(f"Error in fallacy detection/response: {str(e)}")
                                 await self.page.screenshot(path=f"fallacy_error_{username}.png")
@@ -386,6 +462,22 @@ class TwitterMonitorPlaywright:
                         if tweet_text_elem:
                             tweet_text = await tweet_text_elem.inner_text()
                             logger.info(f"Checking tweet: {tweet_text[:100]}...")
+                            
+                            # Get tweet ID
+                            tweet_id = None
+                            try:
+                                tweet_link = await tweet.query_selector('a[href*="/status/"]')
+                                if tweet_link:
+                                    href = await tweet_link.get_attribute('href')
+                                    tweet_id = href.split('/status/')[-1].split('?')[0]
+                            except Exception as e:
+                                logger.error(f"Error getting tweet ID: {e}")
+                                continue
+
+                            # Skip if we've already processed this tweet
+                            if tweet_id and self.db_manager.is_tweet_processed(tweet_id):
+                                logger.info(f"Skipping already processed tweet {tweet_id}")
+                                continue
                             
                             # Force check this tweet
                             logger.info("Checking tweet for fallacies...")
@@ -486,34 +578,63 @@ class TwitterMonitorPlaywright:
                                                                     'div[role="button"]:has-text("Tweet")'
                                                                 ]
                                                                 
-                                                                tweet_button = None
                                                                 for selector in tweet_button_selectors:
                                                                     try:
-                                                                        button = await self.page.wait_for_selector(selector, timeout=2000)
-                                                                        if button:
-                                                                            tweet_button = button
-                                                                            logger.info(f"Found tweet button with selector: {selector}")
+                                                                        tweet_button = await self.page.wait_for_selector(selector, timeout=5000)
+                                                                        if tweet_button:
+                                                                            # Make sure button is visible and clickable
+                                                                            await tweet_button.scroll_into_view_if_needed()
+                                                                            await asyncio.sleep(1)
+                                                                            
+                                                                            # Try multiple click methods
+                                                                            click_methods = [
+                                                                                lambda: tweet_button.click(),
+                                                                                lambda: tweet_button.click(delay=100),
+                                                                                lambda: tweet_button.click(force=True),
+                                                                                lambda: self.page.evaluate("(element) => element.click()", tweet_button)
+                                                                            ]
+                                                                            
+                                                                            for click_method in click_methods:
+                                                                                try:
+                                                                                    await click_method()
+                                                                                    await asyncio.sleep(2)
+                                                                                    
+                                                                                    # Check if the reply was successful
+                                                                                    # Look for elements that indicate success
+                                                                                    success_indicators = [
+                                                                                        'div[data-testid="toast"]',  # Success toast
+                                                                                        'div[aria-label*="Your tweet was sent"]',  # Success message
+                                                                                        'div[data-testid="tweetButtonInline"][aria-disabled="true"]'  # Disabled tweet button
+                                                                                    ]
+                                                                                    
+                                                                                    for indicator in success_indicators:
+                                                                                        try:
+                                                                                            await self.page.wait_for_selector(indicator, timeout=3000)
+                                                                                            logger.info(f"Found success indicator: {indicator}")
+                                                                                            
+                                                                                            # Mark tweet as processed after successful reply
+                                                                                            if tweet_id:
+                                                                                                self.db_manager.mark_tweet_processed(tweet_id, username)
+                                                                                                logger.info(f"Marked tweet {tweet_id} as processed")
+                                                                                            
+                                                                                            return True
+                                                                                        except Exception:
+                                                                                            continue
+                                                                                    
+                                                                                    # If we didn't find success indicators, try next click method
+                                                                                    logger.warning("Click seemed successful but no success indicators found")
+                                                                                    continue
+                                                                                    
+                                                                                except Exception as e:
+                                                                                    logger.error(f"Click method failed: {e}")
+                                                                                    continue
+                                                                            
+                                                                            logger.error("All click methods failed")
                                                                             break
-                                                                    except Exception:
-                                                                        continue
-                                                                
-                                                                if tweet_button:
-                                                                    try:
-                                                                        await tweet_button.click()
-                                                                        logger.info("Clicked tweet button to submit reply")
-                                                                        # Wait for the tweet to be posted
-                                                                        await self.page.wait_for_load_state('networkidle')
-                                                                        await asyncio.sleep(2)
+                                                                            
                                                                     except Exception as e:
-                                                                        logger.error(f"Error clicking tweet button: {e}")
-                                                                        # Try JavaScript click as fallback
-                                                                        try:
-                                                                            await self.page.evaluate("(element) => element.click()", tweet_button)
-                                                                            logger.info("Clicked tweet button using JavaScript")
-                                                                            await self.page.wait_for_load_state('networkidle')
-                                                                            await asyncio.sleep(2)
-                                                                        except Exception as js_e:
-                                                                            logger.error(f"JavaScript click also failed: {js_e}")
+                                                                        logger.debug(f"Tweet button selector {selector} failed: {e}")
+                                                                        continue
                                                                 else:
                                                                     logger.error("Could not find tweet button with any selector")
                                                                 break
@@ -533,6 +654,9 @@ class TwitterMonitorPlaywright:
                                         logger.error("All click methods failed")
                                 else:
                                     logger.info("No fallacies found in this tweet")
+                                    if tweet_id:
+                                        self.db_manager.mark_tweet_processed(tweet_id, username)
+                                        logger.info(f"Marked tweet {tweet_id} as processed (no fallacies)")
                             except Exception as e:
                                 logger.error(f"Error in fallacy detection/response: {str(e)}")
                                 await self.page.screenshot(path=f"fallacy_error_{username}.png")

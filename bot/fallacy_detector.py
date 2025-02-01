@@ -4,6 +4,8 @@ import json
 import os
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
+from pathlib import Path
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -11,12 +13,31 @@ logger = logging.getLogger(__name__)
 
 class FallacyDetector:
     def __init__(self):
+        # Try all possible locations
+        bot_env_path = Path(__file__).parent / '.env'
+        root_env_path = Path(__file__).parent.parent / '.env'
+        database_env_path = Path(__file__).parent.parent / 'database' / '.env'
+        
         api_key = os.getenv("OPENAI_API_KEY")
+        
+        # If not in environment, try reading from files
+        if not api_key:
+            logger.info("API key not found in environment, checking .env files")
+            for env_path in [database_env_path, bot_env_path, root_env_path]:  # prioritize database/.env
+                if env_path.exists():
+                    logger.info(f"Reading from {env_path}")
+                    with open(env_path, 'r') as f:
+                        for line in f:
+                            if line.startswith('OPENAI_API_KEY='):
+                                api_key = line.strip().split('=', 1)[1].strip("'").strip('"')
+                                os.environ["OPENAI_API_KEY"] = api_key
+                                break
+        
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is not set")
+        
         logger.info(f"Initializing FallacyDetector with API key: {api_key[:10]}...")
-            
-        self.client = OpenAI()
+        self.client = OpenAI(api_key=api_key)
         
         # Define fallacy types for reference
         self.fallacies = {
@@ -29,78 +50,77 @@ class FallacyDetector:
             "hasty_generalization": "Drawing conclusions from insufficient evidence",
             "circular_reasoning": "Using the conclusion as a premise",
             "bandwagon": "Arguing that something is true because many people believe it",
-            "anecdotal": "Using a personal experience or isolated example instead of sound reasoning or evidence"
+            "anecdotal": "Using a personal experience or isolated example instead of sound reasoning or evidence",
+            "red_herring": "Introducing an irrelevant topic to divert attention",
+            "whataboutism": "Deflecting criticism by pointing to someone else's actions",
+            "appeal_to_nature": "Arguing that what is natural is inherently good/better",
+            "post_hoc": "Assuming that because B followed A, A caused B",
+            "no_true_scotsman": "Redefining terms to exclude counter-examples",
+            "loaded_question": "Asking a question that contains a controversial assumption",
+            "false_cause": "Incorrectly assuming one thing caused another",
+            "appeal_to_ignorance": "Arguing something is true because it hasn't been proven false",
+            "middle_ground": "Assuming the middle position between two extremes must be correct",
+            "genetic": "Dismissing something solely based on its origin or history"
         }
         
         logger.info("FallacyDetector initialized successfully")
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def detect_fallacies(self, text: str) -> List[Dict[str, Any]]:
-        """Detect logical fallacies in the given text."""
-        logger.info(f"Analyzing text for fallacies: {text}")
-        
-        prompt = f"""You are an expert at detecting logical fallacies. Analyze this text for logical fallacies:
+        """Detect logical fallacies in text."""
+        prompt = f"""Analyze this tweet for logical fallacies, being careful to distinguish between actual fallacies and rhetorical devices like sarcasm or purposeful exaggeration.
 
-"{text}"
+Tweet: "{text}"
 
-Example analysis:
-Text: "Everyone knows that video games cause violence. My neighbor's kid played violent games and got into a fight at school, so that proves it!"
-[
-    {{
-        "type": "bandwagon",
-        "explanation": "Uses 'Everyone knows' to appeal to popular belief rather than evidence",
-        "confidence": 0.95
-    }},
-    {{
-        "type": "anecdotal",
-        "explanation": "Uses a single case of one child to draw a general conclusion about video games and violence",
-        "confidence": 0.9
-    }},
-    {{
-        "type": "hasty_generalization",
-        "explanation": "Concludes that video games cause violence based on a single incident",
-        "confidence": 0.85
-    }}
-]
+Instructions:
+1. First, determine if this tweet is:
+   - Serious/literal
+   - Sarcastic
+   - Using purposeful exaggeration for effect
+   - Making a joke or being humorous
 
-Analyze the text above and list ALL logical fallacies you find. Use these types: {', '.join(self.fallacies.keys())}
-Format your response as a JSON array with "type", "explanation", and "confidence" for each fallacy.
-Return [] ONLY if you are absolutely certain there are no fallacies.
+2. Only identify fallacies if the tweet is being serious/literal. Ignore rhetorical devices used for humor or emphasis.
 
-Your analysis in JSON format:"""
+3. For each ACTUAL fallacy found (not rhetorical devices), provide:
+   - Type of fallacy
+   - Brief explanation
+   - Confidence level (0.0-1.0)
 
-        logger.info("Sending request to OpenAI...")
+IMPORTANT: Your response must be a valid JSON array. Only include fallacies with confidence > 0.8
+If no actual fallacies are found, or if the tweet is clearly sarcastic/humorous, return an empty array: []
+
+Example outputs:
+[]  # for sarcastic/humorous tweets
+[{{"type": "ad_hominem", "explanation": "Attacks the person instead of their argument", "confidence": 0.95}}]  # for actual fallacies
+
+Your response (must be valid JSON array):"""
+
         try:
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4",  # Using GPT-4 for better context understanding
                 messages=[
-                    {"role": "system", "content": "You are an expert at detecting logical fallacies."},
+                    {"role": "system", "content": "You are a logical fallacy detection expert who can distinguish between actual fallacies and rhetorical devices. You MUST respond with a valid JSON array."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=1000
+                temperature=0.1  # Lower temperature for more consistent analysis
             )
-            logger.info(f"Chat API Response received")
+            
             result = response.choices[0].message.content.strip()
             
-            logger.info(f"Raw response content: {result}")
+            # Ensure we have valid JSON array brackets
+            if not (result.startswith('[') and result.endswith(']')):
+                result = '[]'
             
-            try:
-                fallacies = json.loads(result)
-                if not isinstance(fallacies, list):
-                    logger.error(f"Error: Response is not a list: {result}")
-                    return []
-                    
-                logger.info(f"Detected fallacies: {json.dumps(fallacies, indent=2)}")
-                return fallacies
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"Error parsing JSON: {e}")
-                logger.error(f"Raw response: {result}")
-                return []
-                
+            fallacies = json.loads(result)
+            
+            # Log the analysis for debugging
+            logger.info(f"Fallacy analysis for tweet: {text[:100]}...")
+            logger.info(f"Detected fallacies: {fallacies}")
+            
+            return fallacies
+            
         except Exception as e:
-            logger.error(f"Error in OpenAI request: {str(e)}")
+            logger.error(f"Error detecting fallacies: {str(e)}")
             return []
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))

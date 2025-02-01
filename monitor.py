@@ -16,7 +16,20 @@ logger = logging.getLogger(__name__)
 async def main():
     # Load environment variables from the bot directory
     env_path = Path(__file__).parent / 'bot' / '.env'
+    logger.info(f"Loading .env file from: {env_path}")
+    logger.info(f"File exists: {env_path.exists()}")
+    
     load_dotenv(env_path)
+    
+    # Debug: Check if API key is loaded
+    api_key = os.getenv("OPENAI_API_KEY")
+    logger.info(f"API key loaded: {bool(api_key)}")
+    if not api_key:
+        logger.error("OpenAI API key not found in environment!")
+        logger.info("Current environment variables:")
+        for key in os.environ:
+            if 'KEY' in key or 'TOKEN' in key:
+                logger.info(f"Found key: {key}")
     
     monitor = TwitterMonitorPlaywright()
     
@@ -29,9 +42,9 @@ async def main():
                 # Check notifications
                 logger.info("Checking notifications...")
                 # Removed monitor.check_notifications() as it's not present in the updated code
-                
+               
                 # Monitor specific accounts (add accounts you want to monitor)
-                accounts_to_monitor = ["hustadvicka", "continuumcritic"]  # Replace with actual accounts
+                accounts_to_monitor = ["krassenstein", "RpsAgainstTrump", "ConceptualJames", "mhdksafa", "Mollyploofkins", "AesPolitics1", "ContinuumCritic", "hustadvicka"] # Replace with actual accounts
                 for account in accounts_to_monitor:
                     logger.info(f"Monitoring account: {account}")
                     await monitor.monitor_account(account)
