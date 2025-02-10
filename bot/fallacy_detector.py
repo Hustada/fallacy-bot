@@ -1,4 +1,3 @@
-from openai import OpenAI
 from typing import Dict, List, Optional, Any
 import json
 import os
@@ -6,6 +5,8 @@ import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
 from pathlib import Path
 from dotenv import load_dotenv
+from collections import Counter
+from .llm_clients import OpenAIClient, ClaudeClient, GeminiClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -13,33 +14,16 @@ logger = logging.getLogger(__name__)
 
 class FallacyDetector:
     def __init__(self):
-        # Try all possible locations
-        bot_env_path = Path(__file__).parent / '.env'
-        root_env_path = Path(__file__).parent.parent / '.env'
-        database_env_path = Path(__file__).parent.parent / 'database' / '.env'
+        # Initialize LLM clients
+        self.clients = {
+            'openai': OpenAIClient(),
+            'claude': ClaudeClient(),
+            'gemini': GeminiClient()
+        }
         
-        api_key = os.getenv("OPENAI_API_KEY")
+        logger.info("Initializing FallacyDetector with multiple LLM clients...")
         
-        # If not in environment, try reading from files
-        if not api_key:
-            logger.info("API key not found in environment, checking .env files")
-            for env_path in [database_env_path, bot_env_path, root_env_path]:  # prioritize database/.env
-                if env_path.exists():
-                    logger.info(f"Reading from {env_path}")
-                    with open(env_path, 'r') as f:
-                        for line in f:
-                            if line.startswith('OPENAI_API_KEY='):
-                                api_key = line.strip().split('=', 1)[1].strip("'").strip('"')
-                                os.environ["OPENAI_API_KEY"] = api_key
-                                break
-        
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is not set")
-        
-        logger.info(f"Initializing FallacyDetector with API key: {api_key[:10]}...")
-        self.client = OpenAI(api_key=api_key)
-        
-        # Define fallacy types for reference
+        # Define issue types for reference
         self.fallacies = {
             "ad_hominem": "Attacking the person instead of their argument",
             "false_dichotomy": "Presenting only two options when more exist",
@@ -63,14 +47,24 @@ class FallacyDetector:
             "genetic": "Dismissing something solely based on its origin or history"
         }
         
+        self.hyperbole_types = {
+            "historical_comparison": "Inappropriate comparison to historical events or atrocities",
+            "statistical_exaggeration": "Grossly exaggerating numbers or statistics",
+            "catastrophizing": "Presenting minor issues as catastrophic events",
+            "diminishing_serious": "Using hyperbole that diminishes serious issues",
+            "absolute_language": "Using absolute terms inappropriately (always, never, everyone, no one)"
+        }
+        
         logger.info("FallacyDetector initialized successfully")
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def detect_fallacies(self, text: str) -> List[Dict[str, Any]]:
-        """Detect logical fallacies in text."""
-        prompt = f"""Analyze this tweet for logical fallacies, being careful to distinguish between actual fallacies and rhetorical devices like sarcasm or purposeful exaggeration.
+    async def detect_fallacies(self, text: str) -> List[Dict[str, Any]]:
+        """Detect logical fallacies and inappropriate hyperbole in text."""
+        example_response = '[{"type": "logical_fallacy", "subtype": "ad_hominem", "explanation": "Attacks the person instead of their argument", "confidence": 0.95}]'
+        
+        prompt = f"""Analyze this tweet for logical fallacies and inappropriate hyperbole, distinguishing between actual issues and rhetorical devices.
 
-Tweet: "{text}"
+Tweet: \"{text}\"
 
 Instructions:
 1. First, determine if this tweet is:
@@ -79,180 +73,142 @@ Instructions:
    - Using purposeful exaggeration for effect
    - Making a joke or being humorous
 
-2. Only identify fallacies if the tweet is being serious/literal. Ignore rhetorical devices used for humor or emphasis.
+2. Only identify issues if the tweet is being serious/literal. Ignore rhetorical devices used for humor or emphasis.
 
-3. For each ACTUAL fallacy found (not rhetorical devices), provide:
-   - Type of fallacy
+3. For each ACTUAL issue found, provide:
+   - Type (logical_fallacy or inappropriate_hyperbole)
+   - Subtype (specific type)
    - Brief explanation
    - Confidence level (0.0-1.0)
 
-IMPORTANT: Your response must be a valid JSON array. Only include fallacies with confidence > 0.8
-If no actual fallacies are found, or if the tweet is clearly sarcastic/humorous, return an empty array: []
+IMPORTANT: Your response must be a valid JSON array. Only include issues with confidence > 0.8
+If no actual issues are found, or if the tweet is clearly sarcastic/humorous, return an empty array: []
 
 Example outputs:
 []  # for sarcastic/humorous tweets
-[{{"type": "ad_hominem", "explanation": "Attacks the person instead of their argument", "confidence": 0.95}}]  # for actual fallacies
+{example_response}  # for actual fallacies
 
 Your response (must be valid JSON array):"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4",  # Using GPT-4 for better context understanding
-                messages=[
-                    {"role": "system", "content": "You are a logical fallacy detection expert who can distinguish between actual fallacies and rhetorical devices. You MUST respond with a valid JSON array."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1  # Lower temperature for more consistent analysis
-            )
+            all_results = []
             
-            result = response.choices[0].message.content.strip()
+            # Get analysis from each LLM
+            for name, client in self.clients.items():
+                try:
+                    results = await client.analyze_text(text, prompt)
+                    for result in results:
+                        result['source'] = name
+                    all_results.extend(results)
+                except Exception as e:
+                    logger.error(f"Error with {name}: {e}")
             
-            # Ensure we have valid JSON array brackets
-            if not (result.startswith('[') and result.endswith(']')):
-                result = '[]'
+            # Find consensus (issues reported by multiple LLMs)
+            consensus_results = []
+            issue_counter = Counter()
             
-            fallacies = json.loads(result)
+            for result in all_results:
+                key = (result['type'], result['subtype'])
+                issue_counter[key] += 1
+            
+            # Include issues found by at least 2 LLMs
+            for (issue_type, subtype), count in issue_counter.items():
+                if count >= 2:
+                    matching_results = [r for r in all_results 
+                                      if r['type'] == issue_type and 
+                                      r['subtype'] == subtype]
+                    best_result = max(matching_results, key=lambda x: x['confidence'])
+                    consensus_results.append(best_result)
             
             # Log the analysis for debugging
-            logger.info(f"Fallacy analysis for tweet: {text[:100]}...")
-            logger.info(f"Detected fallacies: {fallacies}")
+            logger.info(f"Analysis for tweet: {text[:100]}...")
+            logger.info(f"All results: {all_results}")
+            logger.info(f"Consensus results: {consensus_results}")
             
-            return fallacies
+            return consensus_results
             
         except Exception as e:
-            logger.error(f"Error detecting fallacies: {str(e)}")
+            logger.error(f"Error detecting issues: {str(e)}")
             return []
     
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_response(self, fallacies: List[Dict[str, Any]], original_text: str) -> Optional[str]:
-        """Generate a response explaining the fallacies found."""
-        if not fallacies:
+    async def generate_twitter_response(self, issues: List[Dict[str, Any]], original_text: str) -> Optional[str]:
+        """Generate a concise Twitter response (max 280 chars) explaining the issues found using multiple LLMs."""
+        if not issues:
             return None
             
-        fallacy_descriptions = "\n".join([
-            f"- {fallacy['type'].replace('_', ' ').title()}: {fallacy['explanation']}"
-            for fallacy in fallacies
-        ])
+        # Get the top 2 most confident issues
+        sorted_issues = sorted(issues, key=lambda x: x['confidence'], reverse=True)[:2]
         
-        prompt = f"""Write a friendly response explaining these logical fallacies found in a tweet:
-
-Tweet: "{original_text}"
-
-Fallacies found:
-{fallacy_descriptions}
-
-Write a response that:
-1. Acknowledges their argument
-2. Explains the fallacies found
-3. Suggests how to make the argument stronger
-4. Maintains a helpful and educational tone
-
-Your response:"""
+        # Create detailed issue descriptions
+        issue_details = []
+        for issue in sorted_issues:
+            issue_type = issue['type'].replace('_', ' ').title()
+            subtype = issue['subtype'].replace('_', ' ').title()
+            explanation = issue['explanation']
+            issue_details.append(f"- {issue_type}: {subtype}\n  Explanation: {explanation}")
         
-        try:
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that explains logical fallacies."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=300
-            )
-            return response.choices[0].message.content.strip()
-                
-        except Exception as e:
-            logger.error(f"Error generating response: {str(e)}")
-            return None
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def explain_fallacy(self, fallacy_name: str) -> str:
-        """Explain a specific fallacy type in detail."""
-        if fallacy_name not in self.fallacies:
-            return None
-            
-        prompt = f"""Explain the logical fallacy '{fallacy_name}' in detail. Include:
-        1. Definition
-        2. Why it's problematic
-        3. Common examples
-        4. How to avoid it
-        Keep the explanation clear and concise."""
+        issues_desc = "\n".join(issue_details)
         
-        try:
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are an expert at explaining logical fallacies."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.5,
-                max_tokens=300
-            )
-            
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"Error in explain_fallacy: {str(e)}")
-            return "Sorry, I couldn't generate an explanation at this time."
+        prompt = f"""Generate a witty but educational tweet response about these rhetorical issues.
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_twitter_response(self, fallacies: List[Dict[str, Any]], original_text: str) -> Optional[str]:
-        """Generate a concise Twitter response (max 280 chars) explaining the fallacies found."""
-        if not fallacies:
-            return None
-            
-        # Get the top 2 most confident fallacies
-        sorted_fallacies = sorted(fallacies, key=lambda x: x['confidence'], reverse=True)[:2]
-        
-        fallacy_descriptions = "\n".join([
-            f"- {fallacy['type'].replace('_', ' ').title()}"
-            for fallacy in sorted_fallacies
-        ])
-        
-        prompt = f"""Write a witty, educational tweet response (max 250 chars) about these logical fallacies:
+Original tweet: "{original_text}"
 
-Tweet analyzed: "{original_text}"
+Issues detected:
+{issues_desc}
 
-Fallacies found:
-{fallacy_descriptions}
-
-Requirements:
-1. Must be ≤ 250 characters (STRICT LIMIT)
-2. Use a friendly, referee-like tone
-3. Include a brief explanation
-4. Add a constructive suggestion
-5. Use emojis sparingly
+Response requirements:
+1. MUST be under 250 characters (STRICT LIMIT)
+2. Use a friendly, referee-like tone (like a debate moderator)
+3. Briefly explain why these are issues
+4. Add a constructive suggestion for improvement
+5. Use at most 2 emojis
 6. End with -🎯 @RhetoricalRef
 
-Example:
-"🎯 Penalty flag! That's a bandwagon play + hasty generalization. One case doesn't make a pattern. Try citing specific studies instead! -🎯 @RhetoricalRef"
+Example good responses:
+"🎯 Heads up! Ad hominem alert - attacking someone's character doesn't address their argument. Let's focus on the evidence instead! -🎯 @RhetoricalRef"
 
-Your tweet response:"""
+"Time out! That's a hasty generalization. One example doesn't prove a pattern. Got any broader evidence to share? -🎯 @RhetoricalRef"
+
+Your response (remember: 250 char max!):"""
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a witty bot that explains logical fallacies in tweets."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=100  # Keep it concise for Twitter
-            )
+            all_responses = []
             
-            result = response.choices[0].message.content.strip()
+            # Get responses from all LLMs
+            for name, client in self.clients.items():
+                try:
+                    results = await client.analyze_text(original_text, prompt)
+                    if results and len(results) > 0:
+                        response = results[0].get('explanation', '')
+                        if response and len(response) <= 280:
+                            all_responses.append(response)
+                except Exception as e:
+                    logger.error(f"Error getting response from {name}: {e}")
             
-            # Ensure we don't exceed Twitter's character limit
-            if len(result) > 280:
-                # Try to cut at a sentence boundary
-                cutoff = result[:250].rfind('.')
+            if not all_responses:
+                # Fallback response if all LLMs fail
+                fallback = (
+                    f"🎯 Found {len(sorted_issues)} rhetorical issues! "
+                    f"Let's aim for clearer arguments backed by evidence. "
+                    f"-🎯 @RhetoricalRef"
+                )
+                return fallback
+            
+            # Choose the response that best fits our criteria
+            best_response = min(all_responses, key=len)  # Prefer shorter responses
+            
+            # Ensure it ends with our signature
+            if not best_response.endswith("-🎯 @RhetoricalRef"):
+                best_response = best_response.rstrip() + " -🎯 @RhetoricalRef"
+            
+            # Final length check
+            if len(best_response) > 280:
+                cutoff = best_response[:250].rfind('.')
                 if cutoff == -1:
                     cutoff = 250
-                result = result[:cutoff].rstrip() + " -🎯 @RhetoricalRef"
-                
-            # Remove any hashtags that might have been generated
-            result = ' '.join([word for word in result.split() if not word.startswith('#')])
+                best_response = best_response[:cutoff].rstrip() + " -🎯 @RhetoricalRef"
             
-            return result
+            return best_response
                 
         except Exception as e:
             logger.error(f"Error generating Twitter response: {str(e)}")

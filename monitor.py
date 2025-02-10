@@ -44,10 +44,12 @@ async def main():
                 # Removed monitor.check_notifications() as it's not present in the updated code
                
                 # Monitor specific accounts (add accounts you want to monitor)
-                accounts_to_monitor = ["krassenstein", "RpsAgainstTrump", "ConceptualJames", "mhdksafa", "Mollyploofkins", "AesPolitics1", "ContinuumCritic", "hustadvicka"] # Replace with actual accounts
+                accounts_to_monitor = ["jordanbpeterson", "PrisonPlanet", "RealCandaceO", "michaelmalice", "charliekirk11"]  # Accounts that frequently make controversial arguments  # Accounts that tend to make philosophical arguments # Replace with actual accounts
                 for account in accounts_to_monitor:
                     logger.info(f"Monitoring account: {account}")
                     await monitor.monitor_account(account)
+                    # Add delay between accounts to avoid rate limits
+                    await asyncio.sleep(10)
                 
                 # Wait before next check (30 seconds)
                 logger.info("Waiting 30 seconds before next check...")
