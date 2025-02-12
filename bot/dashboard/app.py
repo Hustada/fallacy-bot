@@ -1,4 +1,13 @@
 import streamlit as st
+import asyncio
+
+# Must be the first Streamlit command
+st.set_page_config(
+    page_title="RhetoricalRef Dashboard",
+    page_icon="🎯",
+    layout="wide"
+)
+
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
@@ -24,39 +33,55 @@ project_root = str(Path(__file__).parent.parent.parent)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-# Load environment variables
+# Load environment variables - handle both local and Streamlit Cloud
 env_path = Path(project_root) / 'bot' / '.env'
-load_dotenv(env_path)
+if env_path.exists():
+    load_dotenv(env_path)
 
-from bot.fallacy_detector import FallacyDetector
+# Get OpenAI API key from environment or Streamlit secrets
+def get_openai_key():
+    # Try Streamlit secrets first (for cloud deployment)
+    try:
+        st.write("Trying Streamlit secrets...")
+        key = st.secrets['openai']['OPENAI_API_KEY']
+        st.write("Found key in Streamlit secrets")
+        return key
+    except Exception as e:
+        st.write(f"No Streamlit secrets found: {str(e)}")
+        # Fall back to environment variable (for local development)
+        st.write("Trying environment variables...")
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            st.error('❌ OpenAI API key not found. Please set OPENAI_API_KEY in environment or Streamlit secrets.')
+            st.write("Available environment variables:", [k for k in os.environ.keys() if 'KEY' in k])
+            return None
+        st.write("Found key in environment variables")
+        return api_key
+
+# Initialize OpenAI client with the key
+client = OpenAI(api_key=get_openai_key())
+
+# Import after environment setup
+from bot.dashboard_detector import DashboardFallacyDetector
 from bot.database.models import log_activity, get_recent_activity, save_sandbox_tweet, get_sandbox_tweets
 
-# Initialize OpenAI client
-client = OpenAI()
-
 # Initialize fallacy detector
-fallacy_detector = FallacyDetector()
+fallacy_detector = DashboardFallacyDetector()
 
-def main():
-    st.set_page_config(
-        page_title="RhetoricalRef Dashboard",
-        page_icon="🎯",
-        layout="wide"
-    )
-    
+async def main():
     st.title("RhetoricalRef Dashboard")
     
     # Sidebar navigation
     page = st.sidebar.selectbox("Navigation", ["Sandbox", "Activity Log", "Analytics"])
     
     if page == "Activity Log":
-        show_activity_log()
+        await show_activity_log()
     elif page == "Sandbox":
-        show_sandbox()
+        await show_sandbox()
     else:
-        show_analytics()
+        await show_analytics()
 
-def show_activity_log():
+async def show_activity_log():
     st.header("Bot Activity Log")
     
     # Date filter
@@ -75,7 +100,7 @@ def show_activity_log():
     else:
         st.info("No activity logged yet.")
 
-def show_sandbox():
+async def show_sandbox():
     st.header("Test Fallacy Detection")
     st.markdown("""
     ### Try out the fallacy detection!
@@ -91,41 +116,19 @@ def show_sandbox():
         help="Enter any text that you want to analyze for logical fallacies."
     )
     
-    # Debug information
-    st.write("### Debug Information")
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        st.error("❌ OpenAI API key not found!")
-    else:
-        st.success(f"✅ OpenAI API key found (starts with: {api_key[:10]}...)")
-    
     col1, col2 = st.columns([1, 5])
     analyze_button = col1.button("🔍 Analyze", use_container_width=True)
     
     if analyze_button and test_tweet:
         st.write("### Analysis Process")
-        st.write("1️⃣ Starting analysis...")
+        st.write("1️⃣ Analyzing text...")
         st.write(f"Input text: {test_tweet}")
         
         try:
-            st.write("2️⃣ Testing OpenAI API connection...")
-            
-            # Try a simple API test first
-            try:
-                test_response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": "Say hello"}],
-                    max_tokens=5
-                )
-                st.success("✅ OpenAI API test successful!")
-            except Exception as e:
-                st.error(f"❌ OpenAI API test failed: {str(e)}")
-                st.warning("Attempting fallacy detection anyway...")
-            
-            # Now try fallacy detection
-            fallacies = fallacy_detector.detect_fallacies(test_tweet)
-            st.write("3️⃣ OpenAI API call complete")
-            st.write("Response received:", fallacies)
+            # Perform fallacy detection
+            fallacies = await fallacy_detector.detect_fallacies(test_tweet)
+            st.write("2️⃣ Analysis complete")
+            st.write("Detected fallacies:", fallacies)
             
             # Display results
             if fallacies:
@@ -178,7 +181,7 @@ def show_sandbox():
             st.error(f"❌ Error during analysis: {str(e)}")
             st.write("Full error:", str(e.__class__.__name__), str(e))
 
-def show_analytics():
+async def show_analytics():
     st.header("Analytics")
     
     # Get all activity data
@@ -216,4 +219,4 @@ def show_analytics():
         st.info("No data available for analytics yet.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

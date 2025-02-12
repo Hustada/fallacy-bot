@@ -55,35 +55,38 @@ class OpenAIClient(LLMClient):
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment")
         self.client = OpenAI(api_key=api_key)
+        self.client.api_key = api_key  # Ensure API key is set for async operations
     
     async def analyze_text(self, text: str, prompt: str) -> List[Dict[str, Any]]:
         try:
-            try:
-                response = self.client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": "You are a logical fallacy detection expert who can distinguish between actual fallacies and rhetorical devices. You MUST respond with a valid JSON array."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1
-                )
-                result = response.choices[0].message.content.strip()
-                logger.info(f"Raw OpenAI response: {repr(result)}")
+            import streamlit as st
+            from openai import AsyncOpenAI
+            
+            async_client = AsyncOpenAI(api_key=self.client.api_key)
+            response = await async_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a logical fallacy detection expert who can distinguish between actual fallacies and rhetorical devices. You MUST respond with a valid JSON array. If no issues are found, return an empty array: []."},
+                    {"role": "user", "content": text},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1
+            )
+            
+            result = response.choices[0].message.content.strip()
+            logger.info(f"Raw OpenAI response: {repr(result)}")
+            
+            # Ensure we have valid JSON array brackets
+            if not (result.startswith('[') and result.endswith(']')):
+                result = '[]'
                 
-                # Ensure we have valid JSON array brackets
-                if not (result.startswith('[') and result.endswith(']')):
-                    result = '[]'
-                    
-                try:
-                    fallacies = json.loads(result)
-                    logger.info(f"OpenAI response parsed: {fallacies}")
-                    return fallacies
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON from OpenAI: {repr(result)}")
-                    logger.error(f"JSON error: {str(e)}")
-                    return []
-            except Exception as e:
-                logger.error(f"OpenAI API error: {str(e)}")
+            try:
+                fallacies = json.loads(result)
+                logger.info(f"OpenAI response parsed: {fallacies}")
+                return fallacies
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON from OpenAI: {repr(result)}")
+                logger.error(f"JSON error: {str(e)}")
                 return []
         except Exception as e:
             logger.error(f"OpenAI analysis error: {e}")
@@ -161,7 +164,7 @@ Example response for a fallacy:
 
 If no fallacies are found, return an empty array: []
 """
-            full_prompt = f"{system_prompt}\n\n{prompt}"
+            full_prompt = f"{system_prompt}\n\nText to analyze: \"{text}\"\n\n{prompt}"
             try:
                 response = self.model.generate_content(full_prompt)
                 result = response.text
