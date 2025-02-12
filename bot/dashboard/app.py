@@ -58,8 +58,14 @@ def get_openai_key():
         st.write("Found key in environment variables")
         return api_key
 
-# Initialize OpenAI client with the key
-client = OpenAI(api_key=get_openai_key())
+# Initialize OpenAI client with API key from Streamlit secrets or environment
+def get_openai_api_key():
+    try:
+        return st.secrets['openai']['OPENAI_API_KEY']
+    except Exception:
+        return os.getenv('OPENAI_API_KEY')
+
+client = OpenAI(api_key=get_openai_api_key())
 
 # Import after environment setup
 from bot.dashboard_detector import DashboardFallacyDetector

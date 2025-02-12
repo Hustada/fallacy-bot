@@ -51,11 +51,18 @@ class LLMClient:
 class OpenAIClient(LLMClient):
     def __init__(self):
         super().__init__()
-        api_key = os.getenv("OPENAI_API_KEY")
+        import streamlit as st
+        
+        # Try Streamlit secrets first, then environment variable
+        try:
+            api_key = st.secrets['openai']['OPENAI_API_KEY']
+        except Exception:
+            api_key = os.getenv("OPENAI_API_KEY")
+            
         if not api_key:
-            raise ValueError("OPENAI_API_KEY not found in environment")
+            raise ValueError("OPENAI_API_KEY not found in Streamlit secrets or environment")
+            
         self.client = OpenAI(api_key=api_key)
-        self.client.api_key = api_key  # Ensure API key is set for async operations
     
     async def analyze_text(self, text: str, prompt: str) -> List[Dict[str, Any]]:
         try:
